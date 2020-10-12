@@ -1,0 +1,12 @@
+start;
+
+insert Instr(1, Malloc{Const64{128}}),
+insert Instr(2, Cmp{Reg64{Rbx},Const64{128}}),
+insert Instr(3, Jump{6, Reg1{FlagGEq}}),
+insert Instr(4, Set{Rax,BinOp64{Add,Reg64{Rax},Reg64{Rbx}}}),
+insert Instr(5, MovPtr{Reg64{Rax},Const64{0}});
+
+commit;
+#dump Fallthrough;
+#dump JumpsTo;
+dump InspectEventOn;

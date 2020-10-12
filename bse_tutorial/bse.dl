@@ -1,0 +1,151 @@
+extern function sub_state(val: Vec<Ref<Expr1T>>, sub: ExprSubst) : Vec<Ref<Expr1T>>
+
+typedef ExprSubst = Subst64{pat64: Ref<Expr64T>, repl64: Ref<Expr64T>} | Subst1{pat1: Ref<Expr1T>, repl1: Ref<Expr1T>} 
+
+typedef state_t = State{
+    constraints: Vec<Ref<Expr1T>>
+}
+function repl(s: state_t, sub: ExprSubst) : state_t{
+    var constraints = match(s){
+        State{constraints} -> constraints.sub_state(sub)
+    };
+    State{constraints}
+}
+
+function add(s: state_t, expr: Ref<Expr1T>) : state_t {
+    var constraints = s.constraints.push_imm(expr);
+    State{constraints}
+}
+
+function to_string(s: state_t) : string {
+    var res="";
+    for (cc in s.constraints){
+        if( res != "" ){
+            res= res++" ∧ "
+        };
+        res = res ++ cc.to_string()
+    };
+    res
+}
+
+//64 bit expression type definition
+typedef Op64T = Add | Sub | Mul | Div
+function to_string(r: Op64T) : string {
+    match(r) {
+        Add-> "+",
+        Sub -> "-",
+        Mul -> "*",
+        Div -> "/"
+    }
+}
+
+
+typedef Reg64T = Rax | Rbx | Rcx 
+function to_string(r: Reg64T) : string {
+    match(r) {
+        Rax-> "Rax",
+        Rbx-> "Rbx",
+        Rcx-> "Rcx"
+    }
+}
+
+typedef Expr64T = Reg64{r: Reg64T} | Const64{v: u32} | BinOp64{ op: Op64T, a1: Ref<Expr64T>, a2: Ref<Expr64T>} | Alloc{a1: Ref<Expr64T>} 
+function to_string(a: Ref<Expr64T>) : string{
+    deref(a).to_string()
+}
+function to_string(a: Expr64T) : string{
+    match(a) {
+        Reg64{r} -> r.to_string(),
+        Const64{v} -> v.to_string(),
+        BinOp64{op, a1, a2} -> "(${a1.to_string()}${op.to_string()}${a2.to_string()})",
+        Alloc{a1} ->  "Alloc(${a1.to_string()})"
+    }
+}
+
+// 1 bit expression type definition
+typedef Op1T = Eq | LEq | GEq | LT | GT
+function to_string(o: Op1T) : string {
+    match(o) {
+        Eq -> "==",
+        LEq -> "<=",
+        GEq -> ">=",
+        LT -> "<",
+        GT -> ">"
+    }
+}
+
+typedef Reg1T = FlagEq | FlagGEq
+function to_string(r: Reg1T) : string {
+    match(r) {
+        FlagEq-> "FlagEq",
+        FlagGEq-> "FlagGEq"
+    }
+}
+
+typedef Expr1T = Reg1{r: Reg1T} | Const1{v: bool} 
+           | BinOp1_64{ op: Op1T, a1: Ref<Expr64T>, a2: Ref<Expr64T>} 
+           | Not{b1: Ref<Expr1T>} 
+           | Boundcheck{e: Ref<Expr64T>}
+function to_string(a: Ref<Expr1T>) : string{
+    deref(a).to_string()
+}
+function to_string(a: Expr1T) : string{
+    match(a) {
+        Reg1{r} -> r.to_string(),
+        Const1{v} -> v.to_string(),
+        BinOp1_64{op, a1, a2} ->  "(${a1.to_string()}${op.to_string()}${a2.to_string()})",
+        Not{b1} -> "!${b1.to_string()}",
+        Boundcheck{e} -> "Bounds(${e.to_string()})"
+    }
+}
+
+function rax() : Ref<Expr64T> { ref_new(Reg64{Rax}) }
+function rbx() : Ref<Expr64T> { ref_new(Reg64{Rbx}) }
+function rcx() : Ref<Expr64T> { ref_new(Reg64{Rcx}) }
+function flag_geq() : Ref<Expr1T> { ref_new(Reg1{FlagGEq}) }
+function alloc(expr: Expr64T) : Ref<Expr64T> {ref_new(Alloc{ref_new(expr)})}
+function op_not(expr: Expr1T) : Ref<Expr1T> {ref_new(Not{ref_new(expr)})}
+function geq(op1: Expr64T, op2: Expr64T) : Ref<Expr1T> {ref_new(BinOp1_64{GEq,ref_new(op1),ref_new(op2)})} 
+
+// Intermediate language instructions definition
+typedef InstrT = Malloc{arg: Expr64T}
+                 | Cmp{cop1: Expr64T, cop2: Expr64T}
+                 | Jump{target: u32, cond: Expr1T}
+                 | Set{dst: Reg64T, src: Expr64T}
+                 | MovPtr{ptr: Expr64T, a2: Expr64T}
+
+// relation type definitions
+    input relation Instr(i: u32, op: InstrT)
+
+    output relation Fallthrough(i: u32, op: InstrT, j: u32)
+    output relation JumpsTo(i: u32, op: InstrT, j: u32)
+    output relation EventOn(i: u32, s: state_t)
+
+    output relation InspectEventOn(i: u32, s: string) 
+    InspectEventOn(i,s.to_string()) :- EventOn(i,s).
+//Construct CFG
+    Fallthrough(i, op, j) :- Instr(i, op), var j=i+1, Instr(j,_).
+    JumpsTo(i, Jump{j,c}, j) :- Instr(i,Jump{j,c}), Instr(j, _).
+
+//Propagate known bad states
+    //Invalid Memory Access 
+    EventOn(i, State{[ref_new(Boundcheck{ref_new(dst)})]} ) :- 
+        Instr(i, MovPtr{dst,_}).
+
+    // Assignment
+    EventOn(i, new) :- Fallthrough(i, Set{dst, expr}, j ),   EventOn(j,old), 
+        var new = old.repl(Subst64{ref_new(Reg64{dst}), ref_new(expr)}).
+    EventOn(i, new) :- Fallthrough(i, Malloc{expr}, j ),   EventOn(j,old), 
+        var new = old.repl(Subst64{ rax(), alloc(expr)}).
+
+    //Jump Taken
+    EventOn(i, new) :- JumpsTo(i, Jump{t,cond}, j), t==j,    EventOn(j,old), 
+        var new = old.add( ref_new(cond) ). 
+
+    //Jump Not Taken
+    EventOn(i, new) :- Fallthrough(i,Jump{_,cond},j),        EventOn(j,old), 
+        var new = old.add( op_not(cond) )  . 
+
+    //Compare
+    EventOn(i, new) :- Fallthrough(i,  Cmp{op1,op2}, j),     EventOn(j,old), 
+        var new = old.repl( Subst1{flag_geq(), op1.geq(op2) } ).
